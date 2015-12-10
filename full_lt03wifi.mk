@@ -21,6 +21,9 @@ $(call inherit-product, device/samsung/lt03wifi/device.mk)
 # Inherit from cm vendor
 $(call inherit-product, vendor/cm/config/common_full_tablet_wifionly.mk)
 
+# Inherit from lt03wifi vendor
+$(call inherit-product-if-exists, vendor/samsung/lt03wifi/lt03wifi-vendor.mk)
+
 # Discard inherited values and use our own instead.
 PRODUCT_NAME := full_lt03wifi
 PRODUCT_DEVICE := lt03wifi
