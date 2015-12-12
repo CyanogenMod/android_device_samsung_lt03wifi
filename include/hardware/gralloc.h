@@ -75,7 +75,6 @@ enum {
     GRALLOC_USAGE_SW_READ_OFTEN         = 0x00000003,
     /* mask for the software read values */
     GRALLOC_USAGE_SW_READ_MASK          = 0x0000000F,
-    
     /* buffer is never written in software */
     GRALLOC_USAGE_SW_WRITE_NEVER        = 0x00000000,
     /* buffer is rarely written in software */
@@ -95,6 +94,21 @@ enum {
     GRALLOC_USAGE_HW_COMPOSER           = 0x00000800,
     /* buffer will be used with the framebuffer device */
     GRALLOC_USAGE_HW_FB                 = 0x00001000,
+
+    /* buffer should be displayed full-screen on an external display when
+     * possible */
+    GRALLOC_USAGE_EXTERNAL_DISP         = 0x00002000,
+
+    /* Must have a hardware-protected path to external display sink for
+     * this buffer.  If a hardware-protected path is not available, then
+     * either don't composite only this buffer (preferred) to the
+     * external sink, or (less desirable) do not route the entire
+     * composition to the external sink.  */
+    GRALLOC_USAGE_PROTECTED             = 0x00004000,
+
+    /* buffer may be used as a cursor */
+    GRALLOC_USAGE_CURSOR                = 0x00008000,
+
     /* buffer will be used with the HW video encoder */
     GRALLOC_USAGE_HW_VIDEO_ENCODER      = 0x00010000,
     /* buffer will be written by the HW camera pipeline */
@@ -105,29 +119,24 @@ enum {
     GRALLOC_USAGE_HW_CAMERA_ZSL         = 0x00060000,
     /* mask for the camera access values */
     GRALLOC_USAGE_HW_CAMERA_MASK        = 0x00060000,
-    /* buffer will be used by the framebuffer device with sysmmu off */
-    GRALLOC_USAGE_HW_FB_PHY_LINEAR      = 0x00008000,
+    /* buffer will be used by the HW IPs when sysmmu is off */
+    GRALLOC_USAGE_PHYSICALLY_LINEAR     = 0x01000000,
     /* mask for the software usage bit-mask */
     GRALLOC_USAGE_HW_MASK               = 0x00079F00,
 
     /* buffer will be used as a RenderScript Allocation */
     GRALLOC_USAGE_RENDERSCRIPT          = 0x00100000,
 
-    /* buffer should be displayed full-screen on an external display when
-     * possible
-     */
-    GRALLOC_USAGE_EXTERNAL_DISP         = 0x00002000,
+    /* Set by the consumer to indicate to the producer that they may attach a
+     * buffer that they did not detach from the BufferQueue. Will be filtered
+     * out by GRALLOC_USAGE_ALLOC_MASK, so gralloc modules will not need to
+     * handle this flag. */
+    GRALLOC_USAGE_FOREIGN_BUFFERS       = 0x00200000,
 
-    /* Must have a hardware-protected path to external display sink for
-     * this buffer.  If a hardware-protected path is not available, then
-     * either don't composite only this buffer (preferred) to the
-     * external sink, or (less desirable) do not route the entire
-     * composition to the external sink.
-     */
-    GRALLOC_USAGE_PROTECTED             = 0x00004000,
-
-    /* buffer may be used as a cursor */
-    GRALLOC_USAGE_CURSOR                = 0x00008000,
+    /* Mask of all flags which could be passed to a gralloc module for buffer
+     * allocation. Any flags not in this mask do not need to be handled by
+     * gralloc modules. */
+    GRALLOC_USAGE_ALLOC_MASK            = ~(GRALLOC_USAGE_FOREIGN_BUFFERS),
 
     /* implementation-specific private usage flags */
     GRALLOC_USAGE_PRIVATE_0             = 0x10000000,
@@ -135,13 +144,13 @@ enum {
     GRALLOC_USAGE_PRIVATE_2             = 0x40000000,
     GRALLOC_USAGE_PRIVATE_3             = 0x80000000,
     GRALLOC_USAGE_PRIVATE_MASK          = 0xF0000000,
-    
-    GRALLOC_USAGE_INTERNAL_ONLY         = 0x10000000,
+	GRALLOC_USAGE_INTERNAL_ONLY         = 0x10000000,
     GRALLOC_USAGE_EXTERNAL_FLEXIBLE     = 0x20000000,
     GRALLOC_USAGE_EXTERNAL_BLOCK        = 0x40000000,
     GRALLOC_USAGE_EXTERNAL_ONLY         = 0x80000000,
     GRALLOC_USAGE_EXTERNAL_VIRTUALFB    = 0x00400000,
     GRALLOC_USAGE_PRIVATE_NONSECURE     = 0x02000000,
+	GRALLOC_USAGE_GPU_BUFFER            = 0x00800000,
 
 #ifdef EXYNOS4_ENHANCEMENTS
     /* SAMSUNG */
@@ -151,7 +160,6 @@ enum {
     GRALLOC_USAGE_HW_ION                = 0x02000000,
     GRALLOC_USAGE_YUV_ADDR              = 0x04000000,
     GRALLOC_USAGE_CAMERA                = 0x08000000,
-
     /* SEC Private usage , for Overlay path at HWC */
     GRALLOC_USAGE_HWC_HWOVERLAY         = 0x20000000,
 #endif
@@ -263,8 +271,17 @@ typedef struct gralloc_module_t {
      * difference that it fills a struct ycbcr with a description of the buffer
      * layout, and zeroes out the reserved fields.
      *
-     * This will only work on buffers with HAL_PIXEL_FORMAT_YCbCr_*_888, and
-     * will return -EINVAL on any other buffer formats.
+     * If the buffer format is not compatible with a flexible YUV format (e.g.
+     * the buffer layout cannot be represented with the ycbcr struct), it
+     * will return -EINVAL.
+     *
+     * This method must work on buffers with HAL_PIXEL_FORMAT_YCbCr_*_888
+     * if supported by the device, as well as with any other format that is
+     * requested by the multimedia codecs when they are configured with a
+     * flexible-YUV-compatible color-format with android native buffers.
+     *
+     * Note that this method may also be called on buffers of other formats,
+     * including non-YUV formats.
      *
      * Added in GRALLOC_MODULE_API_VERSION_0_2.
      */
@@ -348,32 +365,32 @@ typedef struct alloc_device_t {
             buffer_handle_t* handle, int* stride, int bufferSize);
 #endif
 
-    /* 
+    /*
      * (*alloc)() Allocates a buffer in graphic memory with the requested
      * parameters and returns a buffer_handle_t and the stride in pixels to
      * allow the implementation to satisfy hardware constraints on the width
-     * of a pixmap (eg: it may have to be multiple of 8 pixels). 
+     * of a pixmap (eg: it may have to be multiple of 8 pixels).
      * The CALLER TAKES OWNERSHIP of the buffer_handle_t.
      *
      * If format is HAL_PIXEL_FORMAT_YCbCr_420_888, the returned stride must be
      * 0, since the actual strides are available from the android_ycbcr
      * structure.
-     * 
+     *
      * Returns 0 on success or -errno on error.
      */
-    
+
     int (*alloc)(struct alloc_device_t* dev,
             int w, int h, int format, int usage,
             buffer_handle_t* handle, int* stride);
 
     /*
-     * (*free)() Frees a previously allocated buffer. 
+     * (*free)() Frees a previously allocated buffer.
      * Behavior is undefined if the buffer is still mapped in any process,
      * but shall not result in termination of the program or security breaches
      * (allowing a process to get access to another process' buffers).
      * THIS FUNCTION TAKES OWNERSHIP of the buffer_handle_t which becomes
-     * invalid after the call. 
-     * 
+     * invalid after the call.
+     *
      * Returns 0 on success or -errno on error.
      */
     int (*free)(struct alloc_device_t* dev,
@@ -391,9 +408,9 @@ typedef struct alloc_device_t {
 
 /** convenience API for opening and closing a supported device */
 
-static inline int gralloc_open(const struct hw_module_t* module, 
+static inline int gralloc_open(const struct hw_module_t* module,
         struct alloc_device_t** device) {
-    return module->methods->open(module, 
+    return module->methods->open(module,
             GRALLOC_HARDWARE_GPU0, (struct hw_device_t**)device);
 }
 
